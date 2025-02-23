@@ -1,8 +1,9 @@
  const express = require('express')
  const app = express()
  const cors = require('cors')
- const jwt = require('jsonwebtoken')
+ const jwt = require('jsonwebtoken') 
  require('dotenv').config()
+ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
  const port = process.env.PORT || 5000
 
  //MiddleWare
@@ -35,12 +36,13 @@
      const menuCollection = client.db('BistroDB').collection('menu')
      const reviewCollection = client.db('BistroDB').collection('reviews')
      const cartCollection = client.db('BistroDB').collection('carts')
+     const paymentCollection = client.db('BistroDB').collection('payments')
 
      //-2:JWT related apis: Create a jwt token
      app.post('/jwt', async (req, res) => {
        const user = req.body //payload => user email
        const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-         expiresIn: '1h'
+         expiresIn: '5d'
        }) //create token 
        res.send({
          token
@@ -64,7 +66,7 @@
              message: 'unAuthorized access'
            })
          }
-         req.decoded = decoded
+         req.decoded = decoded //EXP: {"email": "user@example.com","iat": 1708432560,"exp": 1708436160}
          next()
        })
      } 
@@ -155,6 +157,44 @@
        //  console.log(result);
        res.send(result)
      })
+     //1.1 Menu update data get
+     app.get('/menu/:id', async(req, res) => {
+      const id = req.params.id 
+      const query = {_id: new ObjectId(id)} 
+      const result = await menuCollection.findOne(query)
+      res.send(result)
+     })  
+     //1.2 menu post => only admin 
+     app.post('/menu', verifyToken, verifyAdmin, async(req, res) => { 
+      const item = req.body
+      const result = await menuCollection.insertOne(item) 
+      res.send(result)
+     }) 
+     //1.25: menu patch 
+     app.patch('/menu/:id', async(req, res) => {
+       const item = req.body 
+       const id = req.params.id 
+       const filter = {_id: new ObjectId(id)} 
+       const updatedDoc = {
+        $set: {
+          name: item.name,
+          category: item.category,
+          price: item.price,
+          recipe: item.recipe,
+          image: item.image
+        }
+       } 
+
+       const result = await menuCollection.updateOne(filter, updatedDoc) 
+       res.send(result)
+     })
+     //1.3: menu delete => only admin
+     app.delete('/menu/:id', verifyToken, verifyAdmin, async(req, res) => {
+      const id = req.params.id 
+      const query = {_id: new ObjectId(id)} 
+      const result = await menuCollection.deleteOne(query)
+      res.send(result)
+     })  
      //2.Load review data
      app.get('/reviews', async (req, res) => {
        const result = await reviewCollection.find().toArray()
@@ -183,10 +223,48 @@
        }
        const result = await cartCollection.deleteOne(query)
        res.send(result)
-
-
      })
 
+    //Payment Intent Starts 
+    app.post('/create-payment-intent', async(req, res) => {
+      const {price} = req.body 
+      const amount = parseInt(price * 100) //Price count as paisa
+      console.log(amount, 'amount inside the intent');
+    
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: 'usd',
+        payment_method_types: ['card']
+      })
+
+      res.send({
+        clientSecret: paymentIntent.client_secret //হলো একটি নিরাপদ টোকেন, যা শুধুমাত্র ফ্রন্টএন্ডে Stripe এর সাথে পেমেন্ট অথরাইজ করতে ব্যবহার করা হয়
+      })
+    }) 
+
+    //Payment related apis 
+    app.get('/payments/:email',verifyToken, async (req, res) => { 
+      const query = {email: req.params.email} 
+      //email validation
+      if(req.params.email !== req.decoded.email){
+        return res.status(403).send({message: 'forbidden access'})
+      }
+      const result = await paymentCollection.find(query).toArray() 
+      res.send(result)
+    })
+    app.post('/payments', async(req, res) => {
+      const payment = req.body 
+      const paymentResult = await paymentCollection.insertOne(payment)
+      
+      console.log('payment info', payment)
+      //Carefully Delete each item from the cart 
+      const query = {_id: {
+        $in: payment.cartIds.map(id => new ObjectId(id))
+      }} 
+     const deleteResult = await cartCollection.deleteMany(query)
+
+      res.send({paymentResult, deleteResult})
+    })
 
      // Send a ping to confirm a successful connection
      await client.db("admin").command({
