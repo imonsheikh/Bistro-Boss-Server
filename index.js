@@ -349,7 +349,8 @@ const { default: axios } = require('axios')
        const trxId = new ObjectId().toString() //Create unique transactionId( Hexadecimal string (24-characters long) )
        console.log(trxId);
        payment.transactionId = trxId 
-
+       
+       //step-1 :Initialize data
        const initiate = { 
         store_id: 'bistr67c146f86a46c',
         store_passwd: 'bistr67c146f86a46c@ssl',
@@ -382,7 +383,8 @@ const { default: axios } = require('axios')
         ship_postcode: 1000,
         ship_country: 'Bangladesh',
     }; 
-
+    
+    //step-2: send the req to sslcommerz payment gateway: why?For gatewayURL
     const initResponse = await axios({
       url: 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php', 
       method: 'POST',
@@ -391,42 +393,46 @@ const { default: axios } = require('axios')
         'Content-Type': 'application/x-www-form-urlencoded'
       } 
     }) 
-    const saveData = await paymentCollection.insertOne(payment)
-    const gatewayUrl = initResponse?.data?.GatewayPageURL
+    const saveData = await paymentCollection.insertOne(payment) 
+
+    //step-3: Get the URL for the payment
+    const gatewayUrl = initResponse?.data?.GatewayPageURL 
+    // step-4: res send to the database 
     res.send({gatewayUrl})
      })
      
      //success-payment api: Validate payment with IPN 
      app.post('/success-payment', async(req, res) => {
+      // step-5: Success payment data get from body 
       const paymentSuccess = req.body 
       // console.log('payment success info', paymentSuccess); 
-
-      const {data} = await axios.get(`https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=bistr67c146f86a46c&store_passwd=bistr67c146f86a46c@ssl`) 
+      //step-6: Validation
+      const {data} = await axios.get(`https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=bistr67c146f86a46c&store_passwd=bistr67c146f86a46c@ssl&format=json`) 
       // console.log('Is valid pay', data);
     
       if(data.status !== 'VALID'){
         return res.send({message: 'Invalid Payment'})
       } 
 
-      //Update the payment 
+      //step-7: Update the payment 
       const updatePayment = await paymentCollection.updateOne({transactionId: data.tran_id}, {
         $set: {
           status: 'success'
         }
       }) 
-      console.log('Update payment', updatePayment);
-
+      // console.log('Update payment', updatePayment);
+      
+      //step-8: find and delete carts
       //Delete the document: Carefully delete:
       const payment = await paymentCollection.findOne({transactionId: data.tran_id}) 
       console.log('the payment', payment);
       const query = {
         _id: {
-          $in: payment.cardIds.map(id => new ObjectId(id)) 
+          $in: payment.cartIds.map(id => new ObjectId(id)) 
         }
       } 
       const deleteResult = await cartCollection.deleteMany(query) 
-
-       
+      // console.log('deleteResultz', deleteResult);
       
       res.redirect('http://localhost:5173/success') //redirect to this url
      }) 
