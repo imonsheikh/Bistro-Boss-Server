@@ -21,7 +21,8 @@
 
  //MiddleWare
  app.use(cors())
- app.use(express.json())
+ app.use(express.json()) 
+ app.use(express.urlencoded()) //For sslCommercez payment success 
 
 
  const {
@@ -29,6 +30,7 @@
    ServerApiVersion,
    ObjectId
  } = require('mongodb');
+const { default: axios } = require('axios')
  const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.le9rg.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`; 
 
   
@@ -81,7 +83,7 @@
 
      //-1: Middleware for verify Token 
      const verifyToken = (req, res, next) => {
-       console.log('inside verify Token', req.headers.authorization);
+      //  console.log('inside verify Token', req.headers.authorization);
        //Check only existence 
        if (!req.headers.authorization) {
          return res.status(401).send({
@@ -342,22 +344,28 @@
      //SSL payment starts: create-ssl-payment 
      app.post('/create-ssl-payment', async (req, res) => {
        const payment = req.body 
-       console.log('payment info', payment) 
+      //  console.log('payment info', payment)
+       
+       const trxId = new ObjectId().toString() //Create unique transactionId( Hexadecimal string (24-characters long) )
+       console.log(trxId);
+       payment.transactionId = trxId 
 
-       const initiate = {
-        total_amount: 100,
+       const initiate = { 
+        store_id: 'bistr67c146f86a46c',
+        store_passwd: 'bistr67c146f86a46c@ssl',
+        total_amount: payment.price,
         currency: 'BDT',
-        tran_id: 'REF123', // use unique tran_id for each api call
-        success_url: 'http://localhost:3030/success',
-        fail_url: 'http://localhost:3030/fail',
-        cancel_url: 'http://localhost:3030/cancel',
-        ipn_url: 'http://localhost:3030/ipn',
+        tran_id: trxId, // use unique tran_id for each api call
+        success_url: 'http://localhost:5000/success-payment', //For success=> backend
+        fail_url: 'http://localhost:5173/fail',//For fail => frontend
+        cancel_url: 'http://localhost:5153/cancel',//For cancel => frontend
+        ipn_url: 'http://localhost:5000/ipn-success-payment', //For success=> backend
         shipping_method: 'Courier',
         product_name: 'Computer.',
         product_category: 'Electronic',
         product_profile: 'general',
         cus_name: 'Customer Name',
-        cus_email: 'customer@example.com',
+        cus_email: `${payment.email}`,
         cus_add1: 'Dhaka',
         cus_add2: 'Dhaka',
         cus_city: 'Dhaka',
@@ -373,8 +381,57 @@
         ship_state: 'Dhaka',
         ship_postcode: 1000,
         ship_country: 'Bangladesh',
-    };
+    }; 
+
+    const initResponse = await axios({
+      url: 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php', 
+      method: 'POST',
+      data: initiate,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      } 
+    }) 
+    const saveData = await paymentCollection.insertOne(payment)
+    const gatewayUrl = initResponse?.data?.GatewayPageURL
+    res.send({gatewayUrl})
      })
+     
+     //success-payment api: Validate payment with IPN 
+     app.post('/success-payment', async(req, res) => {
+      const paymentSuccess = req.body 
+      // console.log('payment success info', paymentSuccess); 
+
+      const {data} = await axios.get(`https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=bistr67c146f86a46c&store_passwd=bistr67c146f86a46c@ssl`) 
+      // console.log('Is valid pay', data);
+    
+      if(data.status !== 'VALID'){
+        return res.send({message: 'Invalid Payment'})
+      } 
+
+      //Update the payment 
+      const updatePayment = await paymentCollection.updateOne({transactionId: data.tran_id}, {
+        $set: {
+          status: 'success'
+        }
+      }) 
+      console.log('Update payment', updatePayment);
+
+      //Delete the document: Carefully delete:
+      const payment = await paymentCollection.findOne({transactionId: data.tran_id}) 
+      console.log('the payment', payment);
+      const query = {
+        _id: {
+          $in: payment.cardIds.map(id => new ObjectId(id)) 
+        }
+      } 
+      const deleteResult = await cartCollection.deleteMany(query) 
+
+       
+      
+      res.redirect('http://localhost:5173/success') //redirect to this url
+     }) 
+
+     //Cancel-Payment api: 
 
      //states: 
      app.get('/admin-stats', verifyToken, verifyAdmin, async (req, res) => {
